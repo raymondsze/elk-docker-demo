@@ -1,0 +1,171 @@
+version: '2'
+
+services:
+  
+
+  elasticsearch1:
+    build: ./elasticsearch1
+    container_name: elasticsearch1
+    environment:
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      cluster.name: "docker-cluster"
+      bootstrap.memory_lock: "true"
+    volumes:
+      - ./elasticsearch1/data/:/usr/share/elasticsearch1/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 1g
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - elk
+
+  elasticsearch2:
+    build: ./elasticsearch2
+    container_name: elasticsearch2
+    environment:
+       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+       cluster.name: "docker-cluster"
+       bootstrap.memory_lock: "true"
+       discovery.zen.ping.unicast.hosts: "elasticsearch2"
+    volumes:
+      - ./elasticsearch2/data/:/usr/share/elasticsearch2/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 1g
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - elk
+
+  logstash-shipper:
+    build: ./logstash-shipper
+    container_name: logstash-shipper
+    environment:
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - ./logstash-shipper/config/logstash.yml:/usr/share/logstash/config/logstash.yml
+      - ./logstash-shipper/pipeline/:/usr/share/logstash/pipeline
+    ports:
+      - 12203:12203/udp
+      - 12202:12202/udp
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch1
+      - elasticsearch2
+
+  logstash-indexer:
+    build: ./logstash-indexer
+    container_name: logstash-indexer
+    environment:
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - ./logstash-indexer/patterns/nginx:/usr/share/logstash/patterns/nginx
+      - ./logstash-indexer/config/logstash.yml:/usr/share/logstash/config/logstash.yml
+      - ./logstash-indexer/pipeline/:/usr/share/logstash/pipeline
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch1
+      - elasticsearch2
+
+  kibana:
+    build: ./kibana
+    container_name: kibana
+    volumes:
+      - ./kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml
+    ports:
+      - 5601:5601
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch1
+      - elasticsearch2
+
+  curator-close:
+    build: ./curator
+    container_name: curator-close
+    volumes:
+      - ./curator/actions/close.yml:/usr/share/curator/actions/close.yml
+      - ./curator/actions/delete_indices.yml:/usr/share/curator/actions/delete_indices.yml
+      - ./curator/curator.yml:/usr/share/curator/curator.yml
+    environment:
+      COMMAND: --config /usr/share/curator/curator.yml /usr/share/curator/actions/close.yml 
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch1
+      - elasticsearch2
+
+  curator-delete-indices:
+    build: ./curator
+    container_name: curator-delete-indices
+    volumes:
+      - ./curator/actions/close.yml:/usr/share/curator/actions/close.yml
+      - ./curator/actions/delete_indices.yml:/usr/share/curator/actions/delete_indices.yml
+      - ./curator/curator.yml:/usr/share/curator/curator.yml
+    environment:
+      COMMAND: --config /usr/share/curator/curator.yml /usr/share/curator/actions/delete_indices.yml 
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch1
+      - elasticsearch2
+
+  redis:
+    image: redis
+    container_name: redis
+    # https://github.com/docker-library/redis/issues/47
+    command: 
+      - redis-server --appendonly yes
+    volumes:
+      - ./redis/data:/data
+    networks:
+      - elk
+
+  nginx:
+    build: ./nginx
+    container_name: nginx
+    logging:
+      driver: gelf
+      options:
+        gelf-address: udp://localhost:12203
+        tag: nginx
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    ports:
+      - 80:80
+    networks:
+      - elk
+    depends_on:
+      - logstash-indexer
+
+  bunyan:
+    build: ./bunyan
+    container_name: bunyan
+    logging:
+      driver: gelf
+      options:
+        gelf-address: udp://localhost:12202
+        tag: bunyan
+    ports:
+      - 3000:3000
+    networks:
+      - elk
+    depends_on:
+      - logstash-indexer
+
+networks:
+  elk:
+    driver: bridge
